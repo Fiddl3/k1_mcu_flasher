@@ -15,6 +15,7 @@ from pathlib import Path
 import argparse
 import sys
 import serial
+import time
 
 
 # Compute simple CRC
@@ -352,6 +353,35 @@ def update(args):
     return 0
 
 
+# Request bootloader function
+def request_bootloader(args):
+    v = args.verbose
+    
+    print(f"Requesting serial bootloader for device {args.port}:{args.baud}...")
+    ser = None
+    try:
+        ser = serial.Serial(args.port, baudrate=args.baud, timeout=2.0)
+    except serial.SerialException as e:
+        print(f'Error opening serial {args.port} with error {e}')
+    
+    try:
+        ser.write(b"~ \x1c Request Serial Bootloader!! ~")
+        ser.close()
+        # Wait for a response
+        time.sleep(1)
+        ser = open_port(args.port)
+        # Check if we're in bootloader mode
+        if _handshake(ser, v) == 1:
+            ver = _get_version(ser, v)
+            print(f'Successfully entered bootloader mode: FV: {ver}')
+            return True
+        else:
+            print("Failed to enter bootloader mode")
+            return False
+    except serial.SerialException as e:
+        print(f"Error requesting bootloader: {e}")
+        return False
+
 parser = argparse.ArgumentParser(description='Creality K1 MCU Flasher')
 parser.add_argument('-v', '--verbose', action='store_true', help='Debug output')
 
@@ -366,6 +396,8 @@ parser.add_argument('-u', '--update', action='store_true', help='Update firmware
 parser.add_argument('-s', '--appstart', action='store_true', help='Attempt to start fw')
 parser.add_argument('-g', '--version', action='store_true', help='Get version')
 
+parser.add_argument('-r', '--request-bootloader', action='store_true', help='Request bootloader and exit (Custom Klipper build needed)')
+parser.add_argument('-b', '--baud', default=230400, type=int, help='Klipper serial baudrate (for bootloader request)')
 # General workflow with bootloader operations:
 # 1. handshake
 # 2. get version
@@ -378,14 +410,17 @@ parser.add_argument('-g', '--version', action='store_true', help='Get version')
 
 args = parser.parse_args(args=None if sys.argv[1:] else ['--help'])
 exit_code = 0
-if args.handshake:
-    exit_code = handshake(args)
-if args.version:
-    exit_code = get_version(args)
-if args.update:
-    exit_code = update(args)
-    exit_code = app_start(args)
-if args.appstart:
-    exit_code = app_start(args)
+if args.request_bootloader:
+    exit_code = request_bootloader(args)
+else:
+    if args.handshake:
+        exit_code = handshake(args)
+    if args.version:
+        exit_code = get_version(args)
+    if args.update:
+        exit_code = update(args)
+        exit_code = app_start(args)
+    if args.appstart:
+        exit_code = app_start(args)
 
 sys.exit(exit_code)
