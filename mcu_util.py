@@ -32,6 +32,17 @@ def debug(msg: str, verbose: bool):
         return
     print(msg)
 
+# Function to display progress bar
+def progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=44, fill='█', print_end="\r"):
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filled_length = int(length * iteration // total)
+    if iteration == total: 
+      fill='▓'
+    bar = fill * filled_length + '░' * (length - filled_length)
+
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end=print_end)
+    if iteration == total:
+        print()
 
 # Handshake stage:
 #  bootloader waiting 15 secs after startup for handshake, then launch app
@@ -39,7 +50,7 @@ def debug(msg: str, verbose: bool):
 #  ALL stages requred passing handshake stage ONCE
 # send: 0x75, receive ack: 0x75
 def _handshake(ser: serial.Serial, v: bool):
-    result = None
+    result = False
     try:
         if not ser.is_open:
             debug(f'open port {ser.name}', v)
@@ -47,19 +58,19 @@ def _handshake(ser: serial.Serial, v: bool):
         debug('send handshake', v)
         if ser.write(bytes([0x75])) == 0:
             print('Cannot write data!')
-            return 0
+            return False
         r = ser.read(1)
         if len(r) > 0:
             debug(f'rcv data {hexlify(r)}', v)
             if r[0] == 0x75:
                 debug('handshake confirmed', v)
-                return 1
+                return True
     except serial.SerialTimeoutException:
         print(f'Timeout serial {ser.name}')
-        result = 0
+        result = False
     except serial.SerialException as e:
         print(f'Error opening serial {ser.name} with error {e}')
-        result = 0
+        result = False
     return result
 
 
@@ -134,10 +145,10 @@ def _app_start(ser: serial.Serial, v: bool):
             debug(f'rcv data {hexlify(r)}', v)
             if r[0] == 0x75 and r[-1] == crc(r[:-1]):
                 debug('app started!', v)
-                result = 1
+                result = True
             else:
                 debug('app start failed!', v)
-                result = 0
+                result = False
     except serial.SerialTimeoutException:
         print(f'Timeout serial {ser.name}')
     except serial.SerialException as e:
@@ -180,14 +191,18 @@ def _flash_fw(ser: serial.Serial, v: bool, ss: int, f: BufferedReader):
     f.seek(0, SEEK_END)
     size = f.tell()
     f.seek(0)
+
     try:
         if not ser.is_open:
             debug(f'open port {ser.name}', v)
             ser.open()
+
         debug('send update request', v)
         if ser.write(bytes([0x01, 0xfe])) == 0:
             print('Cannot write data!')
             return 0
+
+        progress_bar(0, 40, prefix='Progress:', suffix='Complete')
         r = ser.read(2)
         if len(r) > 0:
             debug(f'[flash_update] [1] rcv data {hexlify(r)}', v)
@@ -203,6 +218,9 @@ def _flash_fw(ser: serial.Serial, v: bool, ss: int, f: BufferedReader):
                         if len(r) == 2 and r[-1] == crc(r[:-1]):
                             if r[0] == 0x75:
                                 debug('[flash_update] [2] FW size confirmed!', v)
+                                debug("Starting firmware update...", v)
+                                total_chunks = size // buffer_size + (1 if size % buffer_size > 0 else 0)
+                                chunk_count = 0
                                 for _ in range(size // buffer_size):
                                     buffer_send[:-1] = f.read(buffer_size)
                                     buffer_send[-1] = crc(buffer_send[:-1])
@@ -213,28 +231,37 @@ def _flash_fw(ser: serial.Serial, v: bool, ss: int, f: BufferedReader):
                                     if len(r) == 2 and r[-1] == crc(r[:-1]):
                                         x = fw_status_check(r)
                                         if x > 3:
+                                            chunk_count += 1
+                                            progress_bar(chunk_count, total_chunks, prefix='Progress:', suffix='Complete')
                                             continue
                                         else:
                                             return 0
                                     else:
                                         return 0
+
                                 size_remainder = size % buffer_size
                                 if size_remainder > 0:
                                     buffer_send[:size_remainder] = f.read(size_remainder)
                                     buffer_send[size_remainder] = crc(buffer_send[:size_remainder])
+                                    progress_bar((chunk_count*2)+1, total_chunks*2, prefix='Progress:', suffix='Complete')
+                                    
                                     if ser.write(buffer_send[:size_remainder + 1]) == 0:
                                         debug('[flash_update] [4] cannot send data!', v)
                                         return 2
                                     r = ser.read(2)
                                     if len(r) == 2 and r[-1] == crc(r[:-1]):
+                                        chunk_count += 1
+                                        progress_bar(chunk_count, total_chunks, prefix='Progress:', suffix='Complete')
+                                       
                                         return fw_status_check(r)
                                     else:
                                         return 0
-
                                 else:
                                     return x
-                        else:
-                            return 0
+                            else:
+                                return 0
+                    else:
+                        return 0
             else:
                 debug('update request failed!', v)
                 result = 2
@@ -257,16 +284,16 @@ def open_port(port):
 def handshake(args):
     ser = open_port(args.port)
     v = args.verbose
-    result = 0
+    result = False
     if ser:
         try:
             try:
                 handshake_check = _handshake(ser, v)
                 if handshake_check is not None and handshake_check:
-                    return 1
+                    return True
             except Exception as e:
                 print(f'Exception! Port {args.port} with error {str(e)}')
-                result = 0
+                result = False
         finally:
             ser.close()
     else:
@@ -277,17 +304,17 @@ def handshake(args):
 def get_version(args):
     ser = open_port(args.port)
     v = args.verbose
-    result = 0
+    result = False
     if ser:
         try:
             try:
                 ver = _get_version(ser, v)
                 if ver is not None:
                     print(f'FW Version: {ver}')
-                    return 1
+                    return True
             except Exception as e:
                 print(f'Exception! Port {args.port} with error {str(e)}')
-                result = 0
+                result = False
         finally:
             ser.close()
     else:
@@ -306,11 +333,11 @@ def app_start(args):
                     if res is not None:
                         if res == 1:
                             debug('App started', v)
-                            return 0
+                            return True
                         else:
                             debug(f'App start failed, retry #{retries+1}', v)
                 debug('App start failed after 3 retries', v)
-                return 1
+                return False
             except Exception as e:
                 print(f'Exception! Port {args.port} with error {str(e)}')
         finally:
@@ -323,7 +350,7 @@ def update(args):
     file = Path(args.file)
     if not file.is_file():
         print(f'File {args.file} is not exists')
-        return 1
+        return False
     ser = open_port(args.port)
     v = args.verbose
     if ser:
@@ -339,23 +366,42 @@ def update(args):
                             if res is not None:
                                 if res == 1:
                                     debug('Firmware updated successfully', v)
-                                    return 0
+                                    return True
                                 else:
                                     debug(f'FW flash failed, retry #{retries+1}', v)
                         debug('FW Update failed after 3 retries', v)
-                return 1
+                return False
             except Exception as e:
                 print(f'Exception! Port {args.port} with error {str(e)}')
         finally:
             ser.close()
     else:
         print(f'Cannot open port {args.port}')
-    return 0
+    return False
 
 
 # Request bootloader function
 def request_bootloader(args):
     v = args.verbose
+    
+    # Check if Klipper service is active
+    import subprocess
+    klipper_status = subprocess.run(['systemctl', 'is-active', 'klipper'], capture_output=True, text=True)
+    if klipper_status.stdout.strip() == 'active':
+        user_input = input("Klipper service is active. Do you want to stop it? (y/n): ")
+        if user_input.lower() != 'y':
+            print("Operation cancelled by user.")
+            return False
+        subprocess.run(['sudo', 'systemctl', 'stop', 'klipper'])
+        print("Klipper service stopped.")    
+    
+    ser = open_port(args.port)
+    # Check if we're in bootloader mode
+    ver = _get_version(ser, v)
+    if ver is not None:
+        print(f'Already in bootloader mode: FV: {ver}')
+        return True
+    ser.close()
     
     print(f"Requesting serial bootloader for device {args.port}:{args.baud}...")
     ser = None
@@ -371,7 +417,7 @@ def request_bootloader(args):
         time.sleep(1)
         ser = open_port(args.port)
         # Check if we're in bootloader mode
-        if _handshake(ser, v) == 1:
+        if _handshake(ser, v):
             ver = _get_version(ser, v)
             print(f'Successfully entered bootloader mode: FV: {ver}')
             return True
